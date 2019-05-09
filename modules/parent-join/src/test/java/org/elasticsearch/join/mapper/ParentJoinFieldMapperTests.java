@@ -86,7 +86,7 @@ public class ParentJoinFieldMapperTests extends ESSingleNodeTestCase {
         assertEquals("1", doc.rootDoc().getBinaryValue("join_field#parent").utf8ToString());
         assertEquals("child", doc.rootDoc().getBinaryValue("join_field").utf8ToString());
 
-        // Unkwnown join name
+        // Unknown join name
         MapperException exc = expectThrows(MapperParsingException.class,
             () -> docMapper.parse(new SourceToParse("test", "type", "1",
                 BytesReference.bytes(XContentFactory.jsonBuilder().startObject()
@@ -202,7 +202,7 @@ public class ParentJoinFieldMapperTests extends ESSingleNodeTestCase {
         assertEquals("2", doc.rootDoc().getBinaryValue("join_field#child").utf8ToString());
         assertEquals("grand_child", doc.rootDoc().getBinaryValue("join_field").utf8ToString());
 
-        // Unkwnown join name
+        // Unknown join name
         exc = expectThrows(MapperParsingException.class,
             () -> docMapper.parse(new SourceToParse("test", "type", "1",
                 BytesReference.bytes(XContentFactory.jsonBuilder().startObject()
@@ -400,7 +400,7 @@ public class ParentJoinFieldMapperTests extends ESSingleNodeTestCase {
                 .endObject());
             IllegalArgumentException exc = expectThrows(IllegalArgumentException.class, () -> indexService.mapperService().merge("type",
                 new CompressedXContent(mapping), MapperService.MergeReason.MAPPING_UPDATE));
-            assertThat(exc.getMessage(), containsString("Field [_parent_join] is defined twice in [type]"));
+            assertThat(exc.getMessage(), containsString("Field [_parent_join] is defined twice."));
         }
 
         {
@@ -426,7 +426,7 @@ public class ParentJoinFieldMapperTests extends ESSingleNodeTestCase {
                 .endObject());
             IllegalArgumentException exc = expectThrows(IllegalArgumentException.class, () -> indexService.mapperService().merge("type",
                 new CompressedXContent(updateMapping), MapperService.MergeReason.MAPPING_UPDATE));
-            assertThat(exc.getMessage(), containsString("Field [_parent_join] is defined twice in [type]"));
+            assertThat(exc.getMessage(), containsString("Field [_parent_join] is defined twice."));
         }
     }
 

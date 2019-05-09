@@ -5,23 +5,21 @@
  */
 package org.elasticsearch.xpack.core.security.action.token;
 
-import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.ToXContent;
+import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.xpack.core.security.authc.support.TokensInvalidationResult;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.Objects;
 
 /**
  * Response for a invalidation of one or multiple tokens.
  */
-public final class InvalidateTokenResponse extends ActionResponse implements ToXContent {
+public final class InvalidateTokenResponse extends ActionResponse implements ToXContentObject {
 
     private TokensInvalidationResult result;
 
@@ -35,35 +33,16 @@ public final class InvalidateTokenResponse extends ActionResponse implements ToX
         return result;
     }
 
-    private boolean isCreated() {
-        return result.getInvalidatedTokens().size() > 0
-            && result.getPreviouslyInvalidatedTokens().isEmpty()
-            && result.getErrors().isEmpty();
-    }
-
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
-        if (out.getVersion().before(Version.V_7_0_0)) {
-            out.writeBoolean(isCreated());
-        } else {
-            result.writeTo(out);
-        }
+        result.writeTo(out);
     }
 
     @Override
     public void readFrom(StreamInput in) throws IOException {
         super.readFrom(in);
-        if (in.getVersion().before(Version.V_7_0_0)) {
-            final boolean created = in.readBoolean();
-            if (created) {
-                result = new TokensInvalidationResult(Arrays.asList(""), Collections.emptyList(), Collections.emptyList(), 0);
-            } else {
-                result = new TokensInvalidationResult(Collections.emptyList(), Arrays.asList(""), Collections.emptyList(), 0);
-            }
-        } else {
-            result = new TokensInvalidationResult(in);
-        }
+        result = new TokensInvalidationResult(in);
     }
 
     @Override

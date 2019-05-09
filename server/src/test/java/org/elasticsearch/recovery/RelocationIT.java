@@ -23,9 +23,13 @@ import com.carrotsearch.hppc.IntHashSet;
 import com.carrotsearch.hppc.procedures.IntProcedure;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.util.English;
+import org.elasticsearch.action.ActionFuture;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.elasticsearch.action.admin.cluster.reroute.ClusterRerouteResponse;
 import org.elasticsearch.action.index.IndexRequestBuilder;
+import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -104,6 +108,13 @@ public class RelocationIT extends ESIntegTestCase {
         super.beforeIndexDeletion();
         internalCluster().assertSeqNos();
         internalCluster().assertSameDocIdsOnShards();
+    }
+
+    @Override
+    public Settings indexSettings() {
+        return Settings.builder().put(super.indexSettings())
+            // sync global checkpoint quickly so we can verify seq_no_stats aligned between all copies after tests.
+            .put(IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING.getKey(), "1s").build();
     }
 
     public void testSimpleRelocationNoIndexing() {
@@ -275,8 +286,7 @@ public class RelocationIT extends ESIntegTestCase {
                         .put("index.number_of_shards", 1)
                         .put("index.number_of_replicas", numberOfReplicas)
                         .put("index.refresh_interval", -1) // we want to control refreshes
-                        .put(IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING.getKey(), "100ms"))
-                .get();
+               ).get();
 
         for (int i = 1; i < numberOfNodes; i++) {
             logger.info("--> starting [node_{}] ...", i);
@@ -382,7 +392,7 @@ public class RelocationIT extends ESIntegTestCase {
         assertFalse(client().admin().cluster().prepareHealth().setWaitForNodes("3").setWaitForGreenStatus().get().isTimedOut());
         flush();
 
-        int allowedFailures = randomIntBetween(3, 10);
+        int allowedFailures = randomIntBetween(3, 5); // the default of the `index.allocation.max_retries` is 5.
         logger.info("--> blocking recoveries from primary (allowed failures: [{}])", allowedFailures);
         CountDownLatch corruptionCount = new CountDownLatch(allowedFailures);
         ClusterService clusterService = internalCluster().getInstance(ClusterService.class, p_node);
@@ -461,8 +471,7 @@ public class RelocationIT extends ESIntegTestCase {
         final Settings.Builder settings = Settings.builder()
                 .put("index.routing.allocation.exclude.color", "blue")
                 .put(indexSettings())
-                .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, randomInt(halfNodes - 1))
-                .put(IndexService.GLOBAL_CHECKPOINT_SYNC_INTERVAL_SETTING.getKey(), "100ms");
+                .put(IndexMetaData.SETTING_NUMBER_OF_REPLICAS, randomInt(halfNodes - 1));
         assertAcked(prepareCreate("test", settings));
         assertAllShardsOnNodes("test", redNodes);
         int numDocs = randomIntBetween(100, 150);
@@ -504,6 +513,104 @@ public class RelocationIT extends ESIntegTestCase {
             assertSearchHits(afterRelocation, ids.toArray(new String[ids.size()]));
         }
 
+    }
+
+    public void testRelocateWhileWaitingForRefresh() {
+        logger.info("--> starting [node1] ...");
+        final String node1 = internalCluster().startNode();
+
+        logger.info("--> creating test index ...");
+        prepareCreate("test", Settings.builder()
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            // we want to control refreshes
+            .put("index.refresh_interval", -1)).get();
+
+        logger.info("--> index 10 docs");
+        for (int i = 0; i < 10; i++) {
+            client().prepareIndex("test", "type", Integer.toString(i)).setSource("field", "value" + i).execute().actionGet();
+        }
+        logger.info("--> flush so we have an actual index");
+        client().admin().indices().prepareFlush().execute().actionGet();
+        logger.info("--> index more docs so we have something in the translog");
+        for (int i = 10; i < 20; i++) {
+            client().prepareIndex("test", "type", Integer.toString(i)).setRefreshPolicy(WriteRequest.RefreshPolicy.WAIT_UNTIL)
+                .setSource("field", "value" + i).execute();
+        }
+
+        logger.info("--> start another node");
+        final String node2 = internalCluster().startNode();
+        ClusterHealthResponse clusterHealthResponse = client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID)
+            .setWaitForNodes("2").execute().actionGet();
+        assertThat(clusterHealthResponse.isTimedOut(), equalTo(false));
+
+        logger.info("--> relocate the shard from node1 to node2");
+        client().admin().cluster().prepareReroute()
+            .add(new MoveAllocationCommand("test", 0, node1, node2))
+            .execute().actionGet();
+
+        clusterHealthResponse = client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID)
+            .setWaitForNoRelocatingShards(true).setTimeout(ACCEPTABLE_RELOCATION_TIME).execute().actionGet();
+        assertThat(clusterHealthResponse.isTimedOut(), equalTo(false));
+
+        logger.info("--> verifying count");
+        client().admin().indices().prepareRefresh().execute().actionGet();
+        assertThat(client().prepareSearch("test").setSize(0).execute().actionGet().getHits().getTotalHits().value, equalTo(20L));
+    }
+
+    public void testRelocateWhileContinuouslyIndexingAndWaitingForRefresh() throws Exception {
+        logger.info("--> starting [node1] ...");
+        final String node1 = internalCluster().startNode();
+
+        logger.info("--> creating test index ...");
+        prepareCreate("test", Settings.builder()
+            .put("index.number_of_shards", 1)
+            .put("index.number_of_replicas", 0)
+            .put("index.refresh_interval", -1) // we want to control refreshes
+        ).get();
+
+        logger.info("--> index 10 docs");
+        for (int i = 0; i < 10; i++) {
+            client().prepareIndex("test", "type", Integer.toString(i)).setSource("field", "value" + i).execute().actionGet();
+        }
+        logger.info("--> flush so we have an actual index");
+        client().admin().indices().prepareFlush().execute().actionGet();
+        logger.info("--> index more docs so we have something in the translog");
+        final List<ActionFuture<IndexResponse>> pendingIndexResponses = new ArrayList<>();
+        for (int i = 10; i < 20; i++) {
+            pendingIndexResponses.add(client().prepareIndex("test", "type", Integer.toString(i))
+                .setRefreshPolicy(WriteRequest.RefreshPolicy.WAIT_UNTIL)
+                .setSource("field", "value" + i).execute());
+        }
+
+        logger.info("--> start another node");
+        final String node2 = internalCluster().startNode();
+        ClusterHealthResponse clusterHealthResponse = client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID)
+            .setWaitForNodes("2").execute().actionGet();
+        assertThat(clusterHealthResponse.isTimedOut(), equalTo(false));
+
+        logger.info("--> relocate the shard from node1 to node2");
+        ActionFuture<ClusterRerouteResponse> relocationListener = client().admin().cluster().prepareReroute()
+            .add(new MoveAllocationCommand("test", 0, node1, node2))
+            .execute();
+        logger.info("--> index 100 docs while relocating");
+        for (int i = 20; i < 120; i++) {
+            pendingIndexResponses.add(client().prepareIndex("test", "type", Integer.toString(i))
+                .setRefreshPolicy(WriteRequest.RefreshPolicy.WAIT_UNTIL)
+                .setSource("field", "value" + i).execute());
+        }
+        relocationListener.actionGet();
+        clusterHealthResponse = client().admin().cluster().prepareHealth().setWaitForEvents(Priority.LANGUID)
+            .setWaitForNoRelocatingShards(true).setTimeout(ACCEPTABLE_RELOCATION_TIME).execute().actionGet();
+        assertThat(clusterHealthResponse.isTimedOut(), equalTo(false));
+
+        logger.info("--> verifying count");
+        assertBusy(() -> {
+            client().admin().indices().prepareRefresh().execute().actionGet();
+            assertTrue(pendingIndexResponses.stream().allMatch(ActionFuture::isDone));
+        }, 1, TimeUnit.MINUTES);
+
+        assertThat(client().prepareSearch("test").setSize(0).execute().actionGet().getHits().getTotalHits().value, equalTo(120L));
     }
 
     class RecoveryCorruption implements StubbableTransport.SendRequestBehavior {

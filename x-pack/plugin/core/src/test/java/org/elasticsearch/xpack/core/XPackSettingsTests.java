@@ -7,28 +7,19 @@ package org.elasticsearch.xpack.core;
 
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ESTestCase;
-import javax.crypto.Cipher;
 import javax.crypto.SecretKeyFactory;
 
 import java.security.NoSuchAlgorithmException;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
-import static org.hamcrest.Matchers.not;
 
 public class XPackSettingsTests extends ESTestCase {
 
-    public void testDefaultSSLCiphers() throws Exception {
+    public void testDefaultSSLCiphers() {
         assertThat(XPackSettings.DEFAULT_CIPHERS, hasItem("TLS_RSA_WITH_AES_128_CBC_SHA"));
-
-        final boolean useAES256 = Cipher.getMaxAllowedKeyLength("AES") > 128;
-        if (useAES256) {
-            logger.info("AES 256 is available");
-            assertThat(XPackSettings.DEFAULT_CIPHERS, hasItem("TLS_RSA_WITH_AES_256_CBC_SHA"));
-        } else {
-            logger.info("AES 256 is not available");
-            assertThat(XPackSettings.DEFAULT_CIPHERS, not(hasItem("TLS_RSA_WITH_AES_256_CBC_SHA")));
-        }
+        assertThat(XPackSettings.DEFAULT_CIPHERS, hasItem("TLS_RSA_WITH_AES_256_CBC_SHA"));
     }
 
     public void testPasswordHashingAlgorithmSettingValidation() {
@@ -46,6 +37,10 @@ public class XPackSettingsTests extends ESTestCase {
         final String bcryptAlgo = randomFrom("BCRYPT", "BCRYPT11");
         assertEquals(bcryptAlgo, XPackSettings.PASSWORD_HASHING_ALGORITHM.get(
             Settings.builder().put(XPackSettings.PASSWORD_HASHING_ALGORITHM.getKey(), bcryptAlgo).build()));
+    }
+
+    public void testDefaultSupportedProtocols() {
+        assertThat(XPackSettings.DEFAULT_SUPPORTED_PROTOCOLS, contains("TLSv1.3", "TLSv1.2", "TLSv1.1"));
     }
 
     private boolean isSecretkeyFactoryAlgoAvailable(String algorithmId) {

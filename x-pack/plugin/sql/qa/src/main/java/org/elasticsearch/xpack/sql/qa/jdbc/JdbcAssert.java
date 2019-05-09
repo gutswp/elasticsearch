@@ -7,7 +7,6 @@
 package org.elasticsearch.xpack.sql.qa.jdbc;
 
 import com.carrotsearch.hppc.IntObjectHashMap;
-
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.xpack.sql.jdbc.EsType;
 import org.elasticsearch.xpack.sql.proto.StringUtils;
@@ -139,6 +138,7 @@ public class JdbcAssert {
             if (expectedType == Types.TIMESTAMP_WITH_TIMEZONE) {
                 expectedType = Types.TIMESTAMP;
             }
+
             // since csv doesn't support real, we use float instead.....
             if (expectedType == Types.FLOAT && expected instanceof CsvResultSet) {
                 expectedType = Types.REAL;
@@ -204,6 +204,12 @@ public class JdbcAssert {
                         // fix for CSV which returns the shortName not fully-qualified name
                         if (!columnClassName.contains(".")) {
                             switch (columnClassName) {
+                                case "Date":
+                                    columnClassName = "java.sql.Date";
+                                    break;
+                                case "Time":
+                                    columnClassName = "java.sql.Time";
+                                    break;
                                 case "Timestamp":
                                     columnClassName = "java.sql.Timestamp";
                                     break;

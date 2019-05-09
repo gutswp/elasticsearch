@@ -21,9 +21,11 @@ import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -35,11 +37,14 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
 
     private class MockIndexer extends AsyncTwoPhaseIndexer<Integer, MockJobStats> {
 
+        private final CountDownLatch latch;
         // test the execution order
-        private int step;
+        private volatile int step;
 
-        protected MockIndexer(Executor executor, AtomicReference<IndexerState> initialState, Integer initialPosition) {
+        protected MockIndexer(Executor executor, AtomicReference<IndexerState> initialState, Integer initialPosition,
+                              CountDownLatch latch) {
             super(executor, initialState, initialPosition, new MockJobStats());
+            this.latch = latch;
         }
 
         @Override
@@ -49,22 +54,32 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
 
         @Override
         protected IterationResult<Integer> doProcess(SearchResponse searchResponse) {
+            awaitForLatch();
             assertThat(step, equalTo(3));
             ++step;
             return new IterationResult<Integer>(Collections.emptyList(), 3, true);
+        }
+
+        private void awaitForLatch() {
+            try {
+                latch.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
 
         @Override
         protected SearchRequest buildSearchRequest() {
             assertThat(step, equalTo(1));
             ++step;
-            return null;
+            return new SearchRequest();
         }
 
         @Override
-        protected void onStartJob(long now) {
+        protected void onStart(long now, ActionListener<Void> listener) {
             assertThat(step, equalTo(0));
             ++step;
+            listener.onResponse(null);
         }
 
         @Override
@@ -84,7 +99,7 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
 
         @Override
         protected void doSaveState(IndexerState state, Integer position, Runnable next) {
-            assertThat(step, equalTo(4));
+            assertThat(step, equalTo(5));
             ++step;
             next.run();
         }
@@ -95,9 +110,10 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
         }
 
         @Override
-        protected void onFinish() {
-            assertThat(step, equalTo(5));
+        protected void onFinish(ActionListener<Void> listener) {
+            assertThat(step, equalTo(4));
             ++step;
+            listener.onResponse(null);
             isFinished.set(true);
         }
 
@@ -135,13 +151,14 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
         protected SearchRequest buildSearchRequest() {
             assertThat(step, equalTo(1));
             ++step;
-            return null;
+            return new SearchRequest();
         }
 
         @Override
-        protected void onStartJob(long now) {
+        protected void onStart(long now, ActionListener<Void> listener) {
             assertThat(step, equalTo(0));
             ++step;
+            listener.onResponse(null);
         }
 
         @Override
@@ -156,20 +173,18 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
 
         @Override
         protected void doSaveState(IndexerState state, Integer position, Runnable next) {
-            assertThat(step, equalTo(2));
-            ++step;
-            next.run();
+            fail("should not be called");
         }
 
         @Override
         protected void onFailure(Exception exc) {
-            assertThat(step, equalTo(3));
+            assertThat(step, equalTo(2));
             ++step;
             isFinished.set(true);
         }
 
         @Override
-        protected void onFinish() {
+        protected void onFinish(ActionListener<Void> listener) {
             fail("should not be called");
         }
 
@@ -191,17 +206,19 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
         }
     }
 
-    public void testStateMachine() throws InterruptedException {
+    public void testStateMachine() throws Exception {
         AtomicReference<IndexerState> state = new AtomicReference<>(IndexerState.STOPPED);
         final ExecutorService executor = Executors.newFixedThreadPool(1);
         isFinished.set(false);
         try {
-
-            MockIndexer indexer = new MockIndexer(executor, state, 2);
+            CountDownLatch countDownLatch = new CountDownLatch(1);
+            MockIndexer indexer = new MockIndexer(executor, state, 2, countDownLatch);
             indexer.start();
             assertThat(indexer.getState(), equalTo(IndexerState.STARTED));
             assertTrue(indexer.maybeTriggerAsyncJob(System.currentTimeMillis()));
             assertThat(indexer.getState(), equalTo(IndexerState.INDEXING));
+            countDownLatch.countDown();
+
             assertThat(indexer.getPosition(), equalTo(2));
             ESTestCase.awaitBusy(() -> isFinished.get());
             assertThat(indexer.getStep(), equalTo(6));
@@ -224,8 +241,8 @@ public class AsyncTwoPhaseIndexerTests extends ESTestCase {
             indexer.start();
             assertThat(indexer.getState(), equalTo(IndexerState.STARTED));
             assertTrue(indexer.maybeTriggerAsyncJob(System.currentTimeMillis()));
-            assertTrue(ESTestCase.awaitBusy(() -> isFinished.get()));
-            assertThat(indexer.getStep(), equalTo(4));
+            assertTrue(ESTestCase.awaitBusy(() -> isFinished.get(), 10000, TimeUnit.SECONDS));
+            assertThat(indexer.getStep(), equalTo(3));
 
         } finally {
             executor.shutdownNow();

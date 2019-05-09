@@ -30,4 +30,14 @@ integTestCluster {
             retries: 10)
     return tmpFile.exists()
   }
+  // TODO: systemProperty('tests.cluster', "${-> cluster.transportPortURI }") when migerating to testclusters
+}
+
+testingConventions {
+  naming.clear()
+  naming {
+    IT {
+      baseClass 'org.elasticsearch.xpack.security.MigrateToolTestCase'
+    }
+  }
 }

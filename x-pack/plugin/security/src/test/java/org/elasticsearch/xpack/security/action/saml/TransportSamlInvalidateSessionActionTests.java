@@ -45,6 +45,7 @@ import org.elasticsearch.env.TestEnvironment;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.TermQueryBuilder;
+import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.tasks.Task;
@@ -195,10 +196,16 @@ public class TransportSamlInvalidateSessionActionTests extends SamlTestCase {
         }).when(securityIndex).checkIndexVersionThenExecute(any(Consumer.class), any(Runnable.class));
         when(securityIndex.isAvailable()).thenReturn(true);
         when(securityIndex.indexExists()).thenReturn(true);
+        when(securityIndex.isIndexUpToDate()).thenReturn(true);
+        when(securityIndex.getCreationTime()).thenReturn(Clock.systemUTC().instant());
+        when(securityIndex.aliasName()).thenReturn(".security");
         when(securityIndex.freeze()).thenReturn(securityIndex);
 
+        final XPackLicenseState licenseState = mock(XPackLicenseState.class);
+        when(licenseState.isTokenServiceAllowed()).thenReturn(true);
+
         final ClusterService clusterService = ClusterServiceUtils.createClusterService(threadPool);
-        tokenService = new TokenService(settings, Clock.systemUTC(), client, securityIndex, clusterService);
+        tokenService = new TokenService(settings, Clock.systemUTC(), client, licenseState, securityIndex, securityIndex, clusterService);
 
         final TransportService transportService = new TransportService(Settings.EMPTY, mock(Transport.class), null,
                 TransportService.NOOP_TRANSPORT_INTERCEPTOR, x -> null, null, Collections.emptySet());
@@ -308,34 +315,29 @@ public class TransportSamlInvalidateSessionActionTests extends SamlTestCase {
 
         assertThat(filter1.get(1), instanceOf(TermQueryBuilder.class));
         assertThat(((TermQueryBuilder) filter1.get(1)).fieldName(), equalTo("refresh_token.token"));
-        assertThat(((TermQueryBuilder) filter1.get(1)).value(), equalTo(tokenToInvalidate1.v2()));
+        assertThat(((TermQueryBuilder) filter1.get(1)).value(),
+                equalTo(TokenService.unpackVersionAndPayload(tokenToInvalidate1.v2()).v2()));
 
-        assertThat(bulkRequests.size(), equalTo(6)); // 4 updates (refresh-token + access-token) plus 2 indexes (bwc-invalidate * 2)
+        assertThat(bulkRequests.size(), equalTo(4)); // 4 updates (refresh-token + access-token)
         // Invalidate refresh token 1
         assertThat(bulkRequests.get(0).requests().get(0), instanceOf(UpdateRequest.class));
         assertThat(bulkRequests.get(0).requests().get(0).id(), equalTo("token_" + tokenToInvalidate1.v1().getId()));
         UpdateRequest updateRequest1 = (UpdateRequest) bulkRequests.get(0).requests().get(0);
         assertThat(updateRequest1.toString().contains("refresh_token"), equalTo(true));
-        // BWC incalidate access token 1
-        assertThat(bulkRequests.get(1).requests().get(0), instanceOf(IndexRequest.class));
-        assertThat(bulkRequests.get(1).requests().get(0).id(), equalTo("invalidated-token_" + tokenToInvalidate1.v1().getId()));
         // Invalidate access token 1
-        assertThat(bulkRequests.get(2).requests().get(0), instanceOf(UpdateRequest.class));
-        assertThat(bulkRequests.get(2).requests().get(0).id(), equalTo("token_" + tokenToInvalidate1.v1().getId()));
-        UpdateRequest updateRequest2 = (UpdateRequest) bulkRequests.get(2).requests().get(0);
+        assertThat(bulkRequests.get(1).requests().get(0), instanceOf(UpdateRequest.class));
+        assertThat(bulkRequests.get(1).requests().get(0).id(), equalTo("token_" + tokenToInvalidate1.v1().getId()));
+        UpdateRequest updateRequest2 = (UpdateRequest) bulkRequests.get(1).requests().get(0);
         assertThat(updateRequest2.toString().contains("access_token"), equalTo(true));
         // Invalidate refresh token 2
+        assertThat(bulkRequests.get(2).requests().get(0), instanceOf(UpdateRequest.class));
+        assertThat(bulkRequests.get(2).requests().get(0).id(), equalTo("token_" + tokenToInvalidate2.v1().getId()));
+        UpdateRequest updateRequest3 = (UpdateRequest) bulkRequests.get(2).requests().get(0);
+        assertThat(updateRequest3.toString().contains("refresh_token"), equalTo(true));
+        // Invalidate access token 2
         assertThat(bulkRequests.get(3).requests().get(0), instanceOf(UpdateRequest.class));
         assertThat(bulkRequests.get(3).requests().get(0).id(), equalTo("token_" + tokenToInvalidate2.v1().getId()));
-        UpdateRequest updateRequest3 = (UpdateRequest) bulkRequests.get(3).requests().get(0);
-        assertThat(updateRequest3.toString().contains("refresh_token"), equalTo(true));
-        // BWC incalidate access token 2
-        assertThat(bulkRequests.get(4).requests().get(0), instanceOf(IndexRequest.class));
-        assertThat(bulkRequests.get(4).requests().get(0).id(), equalTo("invalidated-token_" + tokenToInvalidate2.v1().getId()));
-        // Invalidate access token 2
-        assertThat(bulkRequests.get(5).requests().get(0), instanceOf(UpdateRequest.class));
-        assertThat(bulkRequests.get(5).requests().get(0).id(), equalTo("token_" + tokenToInvalidate2.v1().getId()));
-        UpdateRequest updateRequest4 = (UpdateRequest) bulkRequests.get(5).requests().get(0);
+        UpdateRequest updateRequest4 = (UpdateRequest) bulkRequests.get(3).requests().get(0);
         assertThat(updateRequest4.toString().contains("access_token"), equalTo(true));
     }
 
@@ -362,7 +364,7 @@ public class TransportSamlInvalidateSessionActionTests extends SamlTestCase {
                 new RealmRef("native", NativeRealmSettings.TYPE, "node01"), null);
         final Map<String, Object> metadata = samlRealm.createTokenMetadata(nameId, session);
         final PlainActionFuture<Tuple<UserToken, String>> future = new PlainActionFuture<>();
-        tokenService.createUserToken(authentication, authentication, future, metadata, true);
+        tokenService.createOAuth2Tokens(authentication, authentication, metadata, true, future);
         return future.actionGet();
     }
 

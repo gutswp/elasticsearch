@@ -4,7 +4,14 @@
     "methods": ["GET", "POST"],
     "url": {
       "path": "/_search",
-      "paths": ["/_search", "/{index}/_search", "/{index}/{type}/_search"],
+      "paths": ["/_search", "/{index}/_search"],
+      "deprecated_paths" : [
+        {
+          "version" : "7.0.0",
+          "path" : "/{index}/{type}/_search",
+          "description" : "Specifying types in urls has been deprecated"
+        }
+      ],
       "parts": {
         "index": {
          "type" : "list",
@@ -23,6 +30,11 @@
         "analyze_wildcard": {
           "type" : "boolean",
           "description" : "Specify whether wildcard and prefix queries should be analyzed (default: false)"
+        },
+        "ccs_minimize_roundtrips": {
+          "type" : "boolean",
+          "description" : "Indicates whether network round-trips should be minimized as part of cross-cluster search requests execution",
+          "default" : "true"
         },
         "default_operator": {
           "type" : "enum",
@@ -163,6 +175,10 @@
         "version": {
           "type" : "boolean",
           "description" : "Specify whether to return document version as part of a hit"
+        },
+        "seq_no_primary_term": {
+          "type" : "boolean",
+          "description" : "Specify whether to return sequence number and primary term of the last modification of each hit"
         },
         "request_cache": {
           "type" : "boolean",

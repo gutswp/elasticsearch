@@ -37,6 +37,7 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.env.Environment;
 import org.elasticsearch.env.TestEnvironment;
+import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.test.ClusterServiceUtils;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -202,8 +203,10 @@ public class TransportSamlLogoutActionTests extends SamlTestCase {
         }).when(securityIndex).checkIndexVersionThenExecute(any(Consumer.class), any(Runnable.class));
         when(securityIndex.isAvailable()).thenReturn(true);
 
+        final XPackLicenseState licenseState = mock(XPackLicenseState.class);
+        when(licenseState.isTokenServiceAllowed()).thenReturn(true);
         final ClusterService clusterService = ClusterServiceUtils.createClusterService(threadPool);
-        tokenService = new TokenService(settings, Clock.systemUTC(), client, securityIndex, clusterService);
+        tokenService = new TokenService(settings, Clock.systemUTC(), client, licenseState, securityIndex, securityIndex, clusterService);
 
         final TransportService transportService = new TransportService(Settings.EMPTY, mock(Transport.class), null,
                 TransportService.NOOP_TRANSPORT_INTERCEPTOR, x -> null, null, Collections.emptySet());
@@ -239,10 +242,10 @@ public class TransportSamlLogoutActionTests extends SamlTestCase {
                 new SamlNameId(NameID.TRANSIENT, nameId, null, null, null), session);
 
         final PlainActionFuture<Tuple<UserToken, String>> future = new PlainActionFuture<>();
-        tokenService.createUserToken(authentication, authentication, future, tokenMetaData, true);
+        tokenService.createOAuth2Tokens(authentication, authentication, tokenMetaData, true, future);
         final UserToken userToken = future.actionGet().v1();
-        mockGetTokenFromId(userToken, client);
-        final String tokenString = tokenService.getUserTokenString(userToken);
+        mockGetTokenFromId(userToken, false, client);
+        final String tokenString = tokenService.getAccessTokenAsString(userToken);
 
         final SamlLogoutRequest request = new SamlLogoutRequest();
         request.setToken(tokenString);
@@ -256,17 +259,13 @@ public class TransportSamlLogoutActionTests extends SamlTestCase {
         assertThat(indexRequest1, notNullValue());
         assertThat(indexRequest1.id(), startsWith("token"));
 
-        assertThat(bulkRequests.size(), equalTo(2));
-        final BulkRequest bulkRequest1 = bulkRequests.get(0);
-        assertThat(bulkRequest1.requests().size(), equalTo(1));
-        assertThat(bulkRequest1.requests().get(0), instanceOf(IndexRequest.class));
-        assertThat(bulkRequest1.requests().get(0).id(), startsWith("invalidated-token_"));
+        assertThat(bulkRequests.size(), equalTo(1));
 
-        final BulkRequest bulkRequest2 = bulkRequests.get(1);
-        assertThat(bulkRequest2.requests().size(), equalTo(1));
-        assertThat(bulkRequest2.requests().get(0), instanceOf(UpdateRequest.class));
-        assertThat(bulkRequest2.requests().get(0).id(), startsWith("token_"));
-        assertThat(bulkRequest2.requests().get(0).toString(), containsString("\"access_token\":{\"invalidated\":true"));
+        final BulkRequest bulkRequest = bulkRequests.get(0);
+        assertThat(bulkRequest.requests().size(), equalTo(1));
+        assertThat(bulkRequest.requests().get(0), instanceOf(UpdateRequest.class));
+        assertThat(bulkRequest.requests().get(0).id(), startsWith("token_"));
+        assertThat(bulkRequest.requests().get(0).toString(), containsString("\"access_token\":{\"invalidated\":true"));
     }
 
 }

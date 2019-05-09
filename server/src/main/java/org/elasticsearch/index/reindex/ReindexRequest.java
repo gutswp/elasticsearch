@@ -29,6 +29,7 @@ import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.VersionType;
+import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.search.sort.SortOrder;
 import org.elasticsearch.tasks.TaskId;
@@ -68,8 +69,7 @@ public class ReindexRequest extends AbstractBulkIndexByScrollRequest<ReindexRequ
 
     public ReindexRequest(StreamInput in) throws IOException {
         super.readFrom(in);
-        destination = new IndexRequest();
-        destination.readFrom(in);
+        destination = new IndexRequest(in);
         remoteInfo = in.readOptionalWriteable(RemoteInfo::new);
     }
 
@@ -292,9 +292,13 @@ public class ReindexRequest extends AbstractBulkIndexByScrollRequest<ReindexRequ
             builder.startObject("source");
             if (remoteInfo != null) {
                 builder.field("remote", remoteInfo);
+                builder.rawField("query", remoteInfo.getQuery().streamInput(), builder.contentType());
             }
             builder.array("index", getSearchRequest().indices());
-            builder.array("type", getSearchRequest().types());
+            String[] types = getSearchRequest().types();
+            if (types.length > 0) {
+                builder.array("type", types);
+            }
             getSearchRequest().source().innerToXContent(builder, params);
             builder.endObject();
         }
@@ -302,7 +306,8 @@ public class ReindexRequest extends AbstractBulkIndexByScrollRequest<ReindexRequ
             // build destination
             builder.startObject("dest");
             builder.field("index", getDestination().index());
-            if (getDestination().type() != null) {
+            String type = getDestination().type();
+            if (type != null && type.equals(MapperService.SINGLE_MAPPING_NAME) == false) {
                 builder.field("type", getDestination().type());
             }
             if (getDestination().routing() != null) {

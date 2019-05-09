@@ -27,6 +27,7 @@ import org.elasticsearch.license.License;
 import org.elasticsearch.license.TestUtils;
 import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.plugins.MapperPlugin;
+import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.VersionUtils;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -39,11 +40,11 @@ import org.elasticsearch.xpack.core.security.authc.RealmSettings;
 import org.elasticsearch.xpack.core.security.authc.file.FileRealmSettings;
 import org.elasticsearch.xpack.core.security.authz.AuthorizationServiceField;
 import org.elasticsearch.xpack.core.security.authz.accesscontrol.IndicesAccessControl;
+import org.elasticsearch.xpack.core.security.authz.permission.DocumentPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissions;
 import org.elasticsearch.xpack.core.security.authz.permission.FieldPermissionsDefinition;
 import org.elasticsearch.xpack.core.ssl.SSLService;
 import org.elasticsearch.xpack.security.audit.AuditTrailService;
-import org.elasticsearch.xpack.security.audit.index.IndexAuditTrail;
 import org.elasticsearch.xpack.security.audit.logfile.LoggingAuditTrail;
 import org.elasticsearch.xpack.security.authc.Realms;
 import org.hamcrest.Matchers;
@@ -66,9 +67,8 @@ import java.util.stream.Collectors;
 
 import static org.elasticsearch.cluster.metadata.IndexMetaData.INDEX_FORMAT_SETTING;
 import static org.elasticsearch.discovery.DiscoveryModule.ZEN2_DISCOVERY_TYPE;
-import static org.elasticsearch.discovery.DiscoveryModule.ZEN_DISCOVERY_TYPE;
-import static org.elasticsearch.xpack.security.support.SecurityIndexManager.INTERNAL_INDEX_FORMAT;
-import static org.elasticsearch.xpack.security.support.SecurityIndexManager.SECURITY_INDEX_NAME;
+import static org.elasticsearch.xpack.security.support.SecurityIndexManager.INTERNAL_MAIN_INDEX_FORMAT;
+import static org.elasticsearch.xpack.core.security.index.RestrictedIndicesNames.SECURITY_MAIN_ALIAS;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
@@ -130,7 +130,7 @@ public class SecurityTests extends ESTestCase {
         Client client = mock(Client.class);
         when(client.threadPool()).thenReturn(threadPool);
         when(client.settings()).thenReturn(settings);
-        return security.createComponents(client, threadPool, clusterService, mock(ResourceWatcherService.class));
+        return security.createComponents(client, threadPool, clusterService, mock(ResourceWatcherService.class), mock(ScriptService.class));
     }
 
     private static <T> T findComponent(Class<T> type, Collection<Object> components) {
@@ -178,37 +178,6 @@ public class SecurityTests extends ESTestCase {
         Collection<Object> components = createComponents(Settings.EMPTY);
         AuditTrailService auditTrailService = findComponent(AuditTrailService.class, components);
         assertEquals(0, auditTrailService.getAuditTrails().size());
-    }
-
-    public void testIndexAuditTrail() throws Exception {
-        Settings settings = Settings.builder()
-            .put(XPackSettings.AUDIT_ENABLED.getKey(), true)
-            .put(Security.AUDIT_OUTPUTS_SETTING.getKey(), "index").build();
-        Collection<Object> components = createComponents(settings);
-        AuditTrailService service = findComponent(AuditTrailService.class, components);
-        assertNotNull(service);
-        assertEquals(1, service.getAuditTrails().size());
-        assertEquals(IndexAuditTrail.NAME, service.getAuditTrails().get(0).name());
-    }
-
-    public void testIndexAndLoggingAuditTrail() throws Exception {
-        Settings settings = Settings.builder()
-            .put(XPackSettings.AUDIT_ENABLED.getKey(), true)
-            .put(Security.AUDIT_OUTPUTS_SETTING.getKey(), "index,logfile").build();
-        Collection<Object> components = createComponents(settings);
-        AuditTrailService service = findComponent(AuditTrailService.class, components);
-        assertNotNull(service);
-        assertEquals(2, service.getAuditTrails().size());
-        assertEquals(IndexAuditTrail.NAME, service.getAuditTrails().get(0).name());
-        assertEquals(LoggingAuditTrail.NAME, service.getAuditTrails().get(1).name());
-    }
-
-    public void testUnknownOutput() {
-        Settings settings = Settings.builder()
-            .put(XPackSettings.AUDIT_ENABLED.getKey(), true)
-            .put(Security.AUDIT_OUTPUTS_SETTING.getKey(), "foo").build();
-        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> createComponents(settings));
-        assertEquals("Unknown audit trail output [foo]", e.getMessage());
     }
 
     public void testHttpSettingDefaults() throws Exception {
@@ -284,7 +253,7 @@ public class SecurityTests extends ESTestCase {
         int numIters = randomIntBetween(1, 10);
         for (int i = 0; i < numIters; i++) {
             boolean tlsOn = randomBoolean();
-            String discoveryType = randomFrom("single-node", ZEN_DISCOVERY_TYPE, ZEN2_DISCOVERY_TYPE, randomAlphaOfLength(4));
+            String discoveryType = randomFrom("single-node", ZEN2_DISCOVERY_TYPE, randomAlphaOfLength(4));
             Security.ValidateTLSOnJoin validator = new Security.ValidateTLSOnJoin(tlsOn, discoveryType);
             MetaData.Builder builder = MetaData.builder();
             License license = TestUtils.generateSignedLicense(TimeValue.timeValueHours(24));
@@ -300,19 +269,6 @@ public class SecurityTests extends ESTestCase {
             }
             validator.accept(node, ClusterState.builder(ClusterName.DEFAULT).metaData(MetaData.builder().build()).build());
         }
-    }
-
-    public void testJoinValidatorForLicenseDeserialization() throws Exception {
-        DiscoveryNode node = new DiscoveryNode("foo", buildNewFakeTransportAddress(),
-            VersionUtils.randomVersionBetween(random(), null, Version.V_6_3_0));
-        MetaData.Builder builder = MetaData.builder();
-        License license = TestUtils.generateSignedLicense(null,
-            randomIntBetween(License.VERSION_CRYPTO_ALGORITHMS, License.VERSION_CURRENT), -1, TimeValue.timeValueHours(24));
-        TestUtils.putLicense(builder, license);
-        ClusterState state = ClusterState.builder(ClusterName.DEFAULT).metaData(builder.build()).build();
-        IllegalStateException e = expectThrows(IllegalStateException.class,
-            () -> new Security.ValidateLicenseCanBeDeserialized().accept(node, state));
-        assertThat(e.getMessage(), containsString("cannot deserialize the license format"));
     }
 
     public void testJoinValidatorForFIPSLicense() throws Exception {
@@ -340,8 +296,8 @@ public class SecurityTests extends ESTestCase {
         BiConsumer<DiscoveryNode, ClusterState> joinValidator = security.getJoinValidator();
         assertNotNull(joinValidator);
         DiscoveryNode node = new DiscoveryNode("foo", buildNewFakeTransportAddress(), Version.CURRENT);
-        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_INDEX_NAME)
-            .settings(settings(Version.V_6_1_0).put(INDEX_FORMAT_SETTING.getKey(), INTERNAL_INDEX_FORMAT - 1))
+        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_MAIN_ALIAS)
+            .settings(settings(Version.V_6_1_0).put(INDEX_FORMAT_SETTING.getKey(), INTERNAL_MAIN_INDEX_FORMAT - 1))
             .numberOfShards(1).numberOfReplicas(0)
             .build();
         DiscoveryNode existingOtherNode = new DiscoveryNode("bar", buildNewFakeTransportAddress(), Version.V_6_1_0);
@@ -360,8 +316,8 @@ public class SecurityTests extends ESTestCase {
         BiConsumer<DiscoveryNode, ClusterState> joinValidator = security.getJoinValidator();
         assertNotNull(joinValidator);
         DiscoveryNode node = new DiscoveryNode("foo", buildNewFakeTransportAddress(), Version.CURRENT);
-        int indexFormat = randomBoolean() ? INTERNAL_INDEX_FORMAT : INTERNAL_INDEX_FORMAT - 1;
-        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_INDEX_NAME)
+        int indexFormat = randomBoolean() ? INTERNAL_MAIN_INDEX_FORMAT : INTERNAL_MAIN_INDEX_FORMAT - 1;
+        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_MAIN_ALIAS)
             .settings(settings(Version.V_6_1_0).put(INDEX_FORMAT_SETTING.getKey(), indexFormat))
             .numberOfShards(1).numberOfReplicas(0)
             .build();
@@ -379,8 +335,8 @@ public class SecurityTests extends ESTestCase {
         assertNotNull(joinValidator);
         Version version = randomBoolean() ? Version.CURRENT : Version.V_6_1_0;
         DiscoveryNode node = new DiscoveryNode("foo", buildNewFakeTransportAddress(), Version.CURRENT);
-        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_INDEX_NAME)
-            .settings(settings(version).put(INDEX_FORMAT_SETTING.getKey(), INTERNAL_INDEX_FORMAT))
+        IndexMetaData indexMetaData = IndexMetaData.builder(SECURITY_MAIN_ALIAS)
+            .settings(settings(version).put(INDEX_FORMAT_SETTING.getKey(), INTERNAL_MAIN_INDEX_FORMAT))
             .numberOfShards(1).numberOfReplicas(0)
             .build();
         DiscoveryNode existingOtherNode = new DiscoveryNode("bar", buildNewFakeTransportAddress(), version);
@@ -412,13 +368,13 @@ public class SecurityTests extends ESTestCase {
         FieldPermissions permissions = new FieldPermissions(
             new FieldPermissionsDefinition(new String[] { "field_granted" }, Strings.EMPTY_ARRAY));
         IndicesAccessControl.IndexAccessControl indexGrantedAccessControl = new IndicesAccessControl.IndexAccessControl(true, permissions,
-            Collections.emptySet());
+                DocumentPermissions.allowAll());
         permissionsMap.put("index_granted", indexGrantedAccessControl);
         IndicesAccessControl.IndexAccessControl indexAccessControl = new IndicesAccessControl.IndexAccessControl(false,
-            FieldPermissions.DEFAULT, Collections.emptySet());
+                FieldPermissions.DEFAULT, DocumentPermissions.allowAll());
         permissionsMap.put("index_not_granted", indexAccessControl);
         IndicesAccessControl.IndexAccessControl nullFieldPermissions =
-            new IndicesAccessControl.IndexAccessControl(true, null, Collections.emptySet());
+                new IndicesAccessControl.IndexAccessControl(true, null, DocumentPermissions.allowAll());
         permissionsMap.put("index_null", nullFieldPermissions);
         IndicesAccessControl index = new IndicesAccessControl(true, permissionsMap);
         threadContext.putTransient(AuthorizationServiceField.INDICES_PERMISSIONS_KEY, index);
